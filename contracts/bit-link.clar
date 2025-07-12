@@ -296,3 +296,129 @@
     )
   )
 )
+
+;; Unfollow a user
+(define-public (unfollow-user (following-id uint))
+  (let
+    (
+      (follower-profile-result (map-get? principal-to-profile tx-sender))
+    )
+    ;; Get follower profile ID
+    (match follower-profile-result
+      follower-id
+      (begin
+        ;; Check if currently following
+        (asserts! (is-following follower-id following-id) ERR_NOT_FOLLOWING)
+        
+        ;; Remove follow relationship
+        (map-delete following { follower: follower-id, following: following-id })
+        
+        ;; Update follower count for unfollowed user
+        (match (get-profile following-id)
+          following-profile
+          (map-set profiles
+            { profile-id: following-id }
+            (merge following-profile { follower-count: (- (get follower-count following-profile) u1) })
+          )
+          false
+        )
+        
+        ;; Update following count for follower
+        (match (get-profile follower-id)
+          follower-profile
+          (map-set profiles
+            { profile-id: follower-id }
+            (merge follower-profile { following-count: (- (get following-count follower-profile) u1) })
+          )
+          false
+        )
+        
+        (ok true)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
+
+;; Create a post
+(define-public (create-post (content (string-utf8 500)))
+  (let
+    (
+      (author-profile-result (map-get? principal-to-profile tx-sender))
+      (post-id (var-get next-post-id))
+      (current-block stacks-block-height)
+    )
+    ;; Get author profile ID
+    (match author-profile-result
+      author-id
+      (begin
+        ;; Create post
+        (map-set posts
+          { post-id: post-id }
+          {
+            author: author-id,
+            content: content,
+            created-at: current-block,
+            boosted-amount: u0,
+            endorsement-count: u0,
+            is-active: true
+          }
+        )
+        
+        ;; Update author's post count
+        (match (get-profile author-id)
+          author-profile
+          (map-set profiles
+            { profile-id: author-id }
+            (merge author-profile { post-count: (+ (get post-count author-profile) u1) })
+          )
+          false
+        )
+        
+        ;; Increment next post ID
+        (var-set next-post-id (+ post-id u1))
+        
+        (ok post-id)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
+
+;; Boost a post with STX
+(define-public (boost-post (post-id uint) (amount uint))
+  (let
+    (
+      (current-block stacks-block-height)
+    )
+    ;; Check minimum boost amount
+    (asserts! (>= amount MIN_POST_BOOST) ERR_INVALID_AMOUNT)
+    
+    ;; Check if post exists
+    (asserts! (is-some (get-post post-id)) ERR_POST_NOT_FOUND)
+    
+    ;; Check if user has sufficient balance
+    (asserts! (>= (stx-get-balance tx-sender) amount) ERR_INSUFFICIENT_FUNDS)
+    
+    ;; Transfer STX to contract
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    ;; Record boost
+    (map-set post-boosts
+      { post-id: post-id, booster: tx-sender }
+      { amount: amount, boosted-at: current-block }
+    )
+    
+    ;; Update post boosted amount
+    (match (get-post post-id)
+      post-data
+      (map-set posts
+        { post-id: post-id }
+        (merge post-data { boosted-amount: (+ (get boosted-amount post-data) amount) })
+      )
+      false
+    )
+    
+    (ok true)
+  )
+)
