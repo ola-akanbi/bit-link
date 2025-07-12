@@ -184,3 +184,115 @@
     u0
   )
 )
+
+;; Public functions
+
+;; Create user profile
+(define-public (create-profile 
+  (username (string-ascii 50))
+  (bio (string-utf8 280))
+  (avatar-url (string-ascii 200))
+)
+  (let
+    (
+      (profile-id (var-get next-profile-id))
+      (current-block stacks-block-height)
+    )
+    ;; Check if profile already exists for this principal
+    (asserts! (is-none (map-get? principal-to-profile tx-sender)) ERR_PROFILE_EXISTS)
+    
+    ;; Check if username is available
+    (asserts! (is-username-available username) ERR_PROFILE_EXISTS)
+    
+    ;; Check minimum stake
+    (asserts! (>= (stx-get-balance tx-sender) MIN_PROFILE_STAKE) ERR_INSUFFICIENT_FUNDS)
+    
+    ;; Transfer stake to contract
+    (try! (stx-transfer? MIN_PROFILE_STAKE tx-sender (as-contract tx-sender)))
+    
+    ;; Create profile
+    (map-set profiles
+      { profile-id: profile-id }
+      {
+        owner: tx-sender,
+        username: username,
+        bio: bio,
+        avatar-url: avatar-url,
+        created-at: current-block,
+        staked-amount: MIN_PROFILE_STAKE,
+        reputation-score: MIN_PROFILE_STAKE,
+        follower-count: u0,
+        following-count: u0,
+        post-count: u0,
+        total-endorsements: u0,
+        is-active: true
+      }
+    )
+    
+    ;; Set mappings
+    (map-set username-to-profile username profile-id)
+    (map-set principal-to-profile tx-sender profile-id)
+    (map-set profile-stakes 
+      { profile-id: profile-id, staker: tx-sender }
+      { amount: MIN_PROFILE_STAKE, staked-at: current-block }
+    )
+    
+    ;; Increment next profile ID
+    (var-set next-profile-id (+ profile-id u1))
+    
+    (ok profile-id)
+  )
+)
+
+;; Follow a user
+(define-public (follow-user (following-id uint))
+  (let
+    (
+      (follower-profile-result (map-get? principal-to-profile tx-sender))
+      (current-block stacks-block-height)
+    )
+    ;; Get follower profile ID
+    (match follower-profile-result
+      follower-id
+      (begin
+        ;; Check if not following self
+        (asserts! (not (is-eq follower-id following-id)) ERR_SELF_FOLLOW)
+        
+        ;; Check if target profile exists
+        (asserts! (is-some (get-profile following-id)) ERR_PROFILE_NOT_FOUND)
+        
+        ;; Check if not already following
+        (asserts! (not (is-following follower-id following-id)) ERR_ALREADY_FOLLOWING)
+        
+        ;; Create follow relationship
+        (map-set following
+          { follower: follower-id, following: following-id }
+          { followed-at: current-block, is-active: true }
+        )
+        
+        ;; Update follower count for followed user
+        (match (get-profile following-id)
+          following-profile
+          (map-set profiles
+            { profile-id: following-id }
+            (merge following-profile { follower-count: (+ (get follower-count following-profile) u1) })
+          )
+          false
+        )
+        
+        ;; Update following count for follower
+        (match (get-profile follower-id)
+          follower-profile
+          (map-set profiles
+            { profile-id: follower-id }
+            (merge follower-profile { following-count: (+ (get following-count follower-profile) u1) })
+          )
+          false
+        )
+        
+        (ok true)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
